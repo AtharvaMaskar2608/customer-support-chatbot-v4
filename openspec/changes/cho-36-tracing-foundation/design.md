@@ -94,6 +94,14 @@ def thread_context(thread_id: str):
 - [Auto-patch ownership ambiguity for llm token capture] → This change provides only `record_llm` for the manual path; client auto-patching stays with the change that constructs the Anthropic/OpenAI client (P4). Flagged as a coordination point, not a code dependency.
 - [Over-abstracting DeepEval] → Interface is deliberately thin (one decorator + a handful of helpers); downstream can still call DeepEval directly if a rare need arises, but the conventions live here.
 
+## Implementation Notes (verified against a live Confident AI export)
+
+Confirmed end-to-end on DeepEval 4.0.7 by exporting a two-turn `agent → retriever + llm` trace (shared `thread_id`) to Confident AI. Two findings that downstream changes (esp. P1 rag) must not rediscover the hard way:
+
+- **Retriever spans require a non-null `embedder` for ingestion.** Confident AI's trace API rejects a `retriever` span with `retrieverSpans[0].embedder Required` (HTTP 400) when `embedder` is unset. `embedder` is fixed at *decoration time* — DeepEval accepts it as an `@observe(type="retriever", embedder=...)` kwarg, and it is **not** settable via `update_current_span`. To support this, `observe(span_type, name=None, **span_kwargs)` forwards extra kwargs to DeepEval's `@observe` (additive, backward-compatible with the frozen positional signature). **P1 must decorate its retriever with `observe("retriever", embedder=settings.embedding_model)`** or its retriever traces will fail to export. (`top_k` / `chunk_size` are *not* `@observe` kwargs in 4.0.7 — only `embedder` is forwarded onto the span.)
+- **Use a Confident AI *project* API key, not an *org* key.** An org-scoped key (`confident_us_proj_…` vs `confident_us_org_…`) returns `401 Invalid API key` on trace ingestion. The project API key is the one from Project → Settings (or via `deepeval login`).
+- **Verification mechanism for tests.** DeepEval 4.0.7 evicts completed traces from `trace_manager.get_all_traces_dict()` (it retains only *active* traces), so the unit tests capture finished traces by intercepting `trace_manager.post_trace` and swallowing the export — keeping tests fully offline.
+
 ## Open Questions
 
 - Exact keyword name of the tracing toggle in `Settings` (e.g. `TRACING_ENABLED` vs deriving enablement from `CONFIDENT_API_KEY` presence) — resolved against the frozen P0 `Settings` at implementation time; the no-op contract holds either way.
